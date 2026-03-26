@@ -18,6 +18,7 @@
 #include <sys/mman.h>
 #include <poll.h>
 #include <linux/input-event-codes.h>
+#include <wayland-client-core.h>
 #include <xkbcommon/xkbcommon.h>
 #include <libdecor.h>
 
@@ -2824,7 +2825,7 @@ namespace gamescope
         wl_data_offer_receive(pOffer, selectedMimeType, fds[1]);
         close(fds[1]);
 
-        wl_display_flush(m_pDisplay);
+        wl_display_roundtrip(m_pDisplay);
 
         // Read the clipboard contents and store it in a member variable.
         std::string clipboardData;
