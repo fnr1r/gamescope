@@ -60,11 +60,10 @@ static LogScope xdg_log( "xdg_backend" );
 static const char *GAMESCOPE_proxy_tag = "gamescope-proxy";
 static const char *GAMESCOPE_plane_tag = "gamescope-plane";
 static const char *GAMESCOPE_toplevel_tag = "gamescope-toplevel";
-static constexpr std::array supportedMimeTypesArr = {
+
+static constexpr std::array supportedMimeTypes = {
     "text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "STRING", "TEXT",
 };
-
-static const std::span<const char* const> supportedMimeTypes = supportedMimeTypesArr;
 
 template <typename Func, typename... Args>
 auto CallWithAllButLast(Func pFunc, Args&&... args)
