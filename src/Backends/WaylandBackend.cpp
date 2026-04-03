@@ -936,6 +936,8 @@ namespace gamescope
     };
     const wl_data_offer_listener CWaylandBackend::s_DataOfferListener = {
         .offer = WAYLAND_USERDATA_TO_THIS( CWaylandBackend, Wayland_DataOffer_Offer ),
+		.source_actions = WAYLAND_NULL(),
+		.action = WAYLAND_NULL(),
     };
 
     //////////////////
