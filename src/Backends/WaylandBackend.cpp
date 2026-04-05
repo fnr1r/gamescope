@@ -2116,7 +2116,7 @@ namespace gamescope
             }
             wl_data_device_add_listener(m_pDataDevice, &s_DataDeviceListener, this);
             // Set up the data device queue
-            m_pDataDeviceQueue = wl_display_create_queue(m_pDisplay);
+            m_pDataDeviceQueue = wl_display_create_queue_with_name(m_pDisplay, "Clipboard Queue");
             if (!m_pDataDeviceQueue) {
                 xdg_log.errorf("Failed to create data device queue");
                 return false;
@@ -2906,7 +2906,7 @@ namespace gamescope
             return false;
         }
 
-        if ( !( m_pQueue = wl_display_create_queue( m_pBackend->GetDisplay() ) ) )
+        if ( !( m_pQueue = wl_display_create_queue_with_name( m_pBackend->GetDisplay(), "Input Queue" ) ) )
         {
             xdg_log.errorf( "Couldn't create input thread queue." );
             return false;
