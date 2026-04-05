@@ -814,7 +814,8 @@ namespace gamescope
         wl_data_device_manager *m_pDataDeviceManager = nullptr;
         wl_data_device *m_pDataDevice = nullptr;
         std::shared_ptr<std::string> m_pClipboard = nullptr;
-
+		
+		bool m_bWeAreOfferingClipboard = false;
         std::vector<std::string> m_CurrentOfferMimeTypes;
         zwp_primary_selection_device_manager_v1 *m_pPrimarySelectionDeviceManager = nullptr;
         zwp_primary_selection_device_v1 *m_pPrimarySelectionDevice = nullptr;
@@ -1325,6 +1326,7 @@ namespace gamescope
 
         if ( eSelection == GAMESCOPE_SELECTION_CLIPBOARD && m_pBackend->m_pDataDevice )
         {
+			m_pBackend->m_bWeAreOfferingClipboard = true;
             m_pBackend->m_pClipboard = szContents;
             wl_data_source *source = wl_data_device_manager_create_data_source( m_pBackend->m_pDataDeviceManager );
             wl_data_source_add_listener( source, &m_pBackend->s_DataSourceListener, m_pBackend );
@@ -2751,6 +2753,7 @@ namespace gamescope
 
     void CWaylandBackend::Wayland_DataSource_Send( struct wl_data_source *pSource, const char *pMime, int nFd )
     {
+		defer(m_bWeAreOfferingClipboard = false);
         if ( !m_pClipboard )
         {
             close( nFd );
@@ -2760,9 +2763,13 @@ namespace gamescope
         if ( write( nFd, m_pClipboard->c_str(), len ) != len )
             xdg_log.infof( "Failed to write all %zd bytes to clipboard", len );
         close( nFd );
+		// if we don't destory this source, we might get asked to re-send this
+		// to ourselves, causing a deadlock
+		wl_data_source_destroy(pSource);
     }
     void CWaylandBackend::Wayland_DataSource_Cancelled( struct wl_data_source *pSource )
     {
+		defer(m_bWeAreOfferingClipboard = false);
         wl_data_source_destroy( pSource );
     }
 
@@ -2796,6 +2803,13 @@ namespace gamescope
             gamescope_set_selection(std::string{}, GAMESCOPE_SELECTION_CLIPBOARD);
             return;
         }
+		// We are offering our clipboard
+		if (m_bWeAreOfferingClipboard) {
+			xdg_log.debugf("We are currently offering out clipboard. Ignoring selection.");
+			wl_data_offer_destroy(pOffer);
+			m_CurrentOfferMimeTypes.clear();
+			return;
+		}
 
         const char *selectedMimeType = nullptr;
 
@@ -2826,7 +2840,8 @@ namespace gamescope
         wl_data_offer_receive(pOffer, selectedMimeType, fds[1]);
         close(fds[1]);
 
-        wl_display_roundtrip(m_pDisplay);
+        int retn = wl_display_flush(m_pDisplay);
+		xdg_log.debugf("wl_display_flush returned %i", retn);
 
         // Read the clipboard contents and store it in a member variable.
         std::string clipboardData;
