@@ -1,5 +1,6 @@
 #pragma once
 
+#include "WaylandClipboardState.hpp"
 #include "WaylandInputThread.hpp"
 #include "WaylandOutputInfo.hpp"
 #include "backend.h"
@@ -211,6 +212,14 @@ class CWaylandBackend : public CBaseBackend {
 	void Wayland_PrimarySelectionSource_Cancelled(struct zwp_primary_selection_source_v1* pSource);
 	static const zwp_primary_selection_source_v1_listener s_PrimarySelectionSourceListener;
 
+	void Wayland_DataDevice_DataOffer(struct wl_data_device* pDevice, struct wl_data_offer* pOffer);
+	void Wayland_DataDevice_Selection(wl_data_device* pDataDevice, wl_data_offer* pOffer);
+	static const wl_data_device_listener s_DataDeviceListener;
+	void Wayland_DataOffer_Offer(struct wl_data_offer* pOffer, const char* pMime);
+	static const struct wl_data_offer_listener s_DataOfferListener;
+
+	static const std::span<const char* const> s_SupportedMimeTypes;
+
 	CWaylandInputThread m_InputThread;
 
 	wl_display* m_pDisplay = nullptr;
@@ -281,5 +290,10 @@ class CWaylandBackend : public CBaseBackend {
 	wl_surface* m_pCursorSurface = nullptr;
 	std::shared_ptr<INestedHints::CursorInfo> m_pDefaultCursorInfo;
 	wl_surface* m_pDefaultCursorSurface = nullptr;
+
+	void CWaylandReaderThread();
+	CWaylandClipboardState m_ClipboardState;
+	std::mutex m_ClipboardMutex;
+	std::vector<std::string> m_CurrentOfferMimeTypes;
 };
 } // namespace gamescope

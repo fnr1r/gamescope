@@ -11,6 +11,7 @@
 #include "externs_gs.hpp"
 #include "refresh_rate.h"
 #include "rendervulkan.hpp"
+#include "steamcompmgr.hpp"
 #include "tag_identify.hpp"
 #include "wlserver.hpp"
 #include "xdg_log.hpp"
@@ -84,6 +85,25 @@ const zwp_primary_selection_source_v1_listener CWaylandBackend::s_PrimarySelecti
 	.cancelled =
 		WAYLAND_USERDATA_TO_THIS(CWaylandBackend, Wayland_PrimarySelectionSource_Cancelled),
 };
+const wl_data_device_listener CWaylandBackend::s_DataDeviceListener = {
+	.data_offer = WAYLAND_USERDATA_TO_THIS(CWaylandBackend, Wayland_DataDevice_DataOffer),
+	.enter = WAYLAND_NULL(),
+	.leave = WAYLAND_NULL(),
+	.motion = WAYLAND_NULL(),
+	.drop = WAYLAND_NULL(),
+	.selection = WAYLAND_USERDATA_TO_THIS(CWaylandBackend, Wayland_DataDevice_Selection),
+};
+const wl_data_offer_listener CWaylandBackend::s_DataOfferListener = {
+	.offer = WAYLAND_USERDATA_TO_THIS(CWaylandBackend, Wayland_DataOffer_Offer),
+	.source_actions = WAYLAND_NULL(),
+	.action = WAYLAND_NULL(),
+};
+
+static constexpr std::array supportedMimeTypesArr = {
+	"text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "STRING", "TEXT"
+};
+
+const std::span<const char* const> CWaylandBackend::s_SupportedMimeTypes = supportedMimeTypesArr;
 
 // Not const... weird.
 static libdecor_interface s_LibDecorInterface = {
@@ -241,8 +261,22 @@ bool CWaylandBackend::Init() {
 		return false;
 	}
 
-	xdg_log.infof("Initted Wayland backend");
+	// Set up the data device listener
+	if (m_pDataDeviceManager && !m_pDataDevice) {
+		m_pDataDevice = wl_data_device_manager_get_data_device(m_pDataDeviceManager, m_pSeat);
+		if (!m_pDataDevice) {
+			xdg_log.errorf("Failed to get wl_data_device");
+			return false;
+		}
+		wl_data_device_add_listener(m_pDataDevice, &s_DataDeviceListener, this);
+	}
 
+	// Set up the clipboard reader
+	m_ClipboardState.m_ClipboardThreadRunning = true;
+	m_ClipboardState.m_ClipboardReadThread =
+		std::thread(&CWaylandBackend::CWaylandReaderThread, this);
+
+	xdg_log.infof("Initialized Wayland backend");
 	return true;
 }
 
@@ -823,10 +857,13 @@ void CWaylandBackend::Wayland_WPColorManager_ColorManagerDone(
 void CWaylandBackend::Wayland_DataSource_Send(
 	struct wl_data_source* pSource, const char* pMime, int nFd
 ) {
+	defer(close(nFd));
+	std::lock_guard<std::mutex> lock(m_ClipboardMutex);
+	if (!m_pClipboard)
+		return;
 	ssize_t len = m_pClipboard->length();
 	if (write(nFd, m_pClipboard->c_str(), len) != len)
 		xdg_log.infof("Failed to write all %zd bytes to clipboard", len);
-	close(nFd);
 }
 void CWaylandBackend::Wayland_DataSource_Cancelled(struct wl_data_source* pSource) {
 	wl_data_source_destroy(pSource);
@@ -837,15 +874,124 @@ void CWaylandBackend::Wayland_DataSource_Cancelled(struct wl_data_source* pSourc
 void CWaylandBackend::Wayland_PrimarySelectionSource_Send(
 	struct zwp_primary_selection_source_v1* pSource, const char* pMime, int nFd
 ) {
+	defer(close(nFd));
+	if (!m_pPrimarySelection)
+		return;
 	ssize_t len = m_pPrimarySelection->length();
 	if (write(nFd, m_pPrimarySelection->c_str(), len) != len)
 		xdg_log.infof("Failed to write all %zd bytes to clipboard", len);
-	close(nFd);
 }
 void CWaylandBackend::Wayland_PrimarySelectionSource_Cancelled(
 	struct zwp_primary_selection_source_v1* pSource
 ) {
 	zwp_primary_selection_source_v1_destroy(pSource);
+}
+
+// Data Device
+
+void CWaylandBackend::CWaylandReaderThread() {
+	while (m_ClipboardState.m_ClipboardThreadRunning) {
+		CWaylandDataOffer pending;
+		{
+			std::unique_lock<std::mutex> mcs_lock(m_ClipboardState.m_PendingOffersMutex);
+			m_ClipboardState.m_PendingOffersCV.wait(mcs_lock, [this] {
+				return !m_ClipboardState.m_PendingOffers.empty() ||
+					   !m_ClipboardState.m_ClipboardThreadRunning;
+			});
+
+			if (!m_ClipboardState.m_ClipboardThreadRunning)
+				break;
+			if (m_ClipboardState.m_PendingOffers.empty())
+				continue;
+
+			pending = m_ClipboardState.m_PendingOffers.front();
+			m_ClipboardState.m_PendingOffers.pop();
+		}
+
+		// Read the clipboard contents and store it in a member variable.
+		std::string clipboardData;
+		char buf[1024];
+		ssize_t n;
+		while ((n = read(pending.m_fd, buf, sizeof(buf))) > 0) {
+			clipboardData.append(buf, n);
+		}
+		close(pending.m_fd);
+
+		{
+			std::lock_guard<std::mutex> c_lock(m_ClipboardMutex);
+			m_pClipboard = std::make_shared<std::string>(clipboardData);
+			m_CurrentOfferMimeTypes.clear();
+		}
+
+		gamescope_set_selection(clipboardData, GAMESCOPE_SELECTION_CLIPBOARD);
+
+		wl_data_offer_destroy(pending.m_pOffer);
+	}
+}
+
+void CWaylandBackend::Wayland_DataDevice_Selection(
+	wl_data_device* pDataDevice, wl_data_offer* pOffer
+) {
+	std::lock_guard<std::mutex> lock(m_ClipboardMutex);
+
+	// An application has set the clipboard contents
+	if (!pOffer) {
+		// Clipboard is empty
+		m_CurrentOfferMimeTypes.clear();
+		m_pClipboard = nullptr;
+		gamescope_set_selection(std::string{}, GAMESCOPE_SELECTION_CLIPBOARD);
+		return;
+	}
+
+	const char* selectedMimeType = nullptr;
+
+	for (const char* supportedType : s_SupportedMimeTypes) {
+		if (std::find(
+				m_CurrentOfferMimeTypes.begin(), m_CurrentOfferMimeTypes.end(), supportedType
+			) != m_CurrentOfferMimeTypes.end()) {
+			selectedMimeType = supportedType;
+			break;
+		}
+	}
+
+	if (!selectedMimeType) {
+		xdg_log.debugf("No supported clipboard MIME type found. Destroying data offer.");
+		wl_data_offer_destroy(pOffer);
+		m_CurrentOfferMimeTypes.clear();
+		return;
+	}
+
+	xdg_log.debugf("Accepting clipboard MIME type: %s", selectedMimeType);
+
+	int fds[2];
+	if (pipe(fds) < 0) {
+		xdg_log.errorf("Failed to create pipe for clipboard data. Destroying data offer.");
+		wl_data_offer_destroy(pOffer);
+		m_CurrentOfferMimeTypes.clear();
+		return;
+	}
+
+	wl_data_offer_receive(pOffer, selectedMimeType, fds[1]);
+	close(fds[1]);
+	wl_display_flush(m_pDisplay);
+
+	{
+		std::lock_guard<std::mutex> queueLock(m_ClipboardState.m_PendingOffersMutex);
+		m_ClipboardState.m_PendingOffers.push({pOffer, fds[0]});
+	}
+	m_ClipboardState.m_PendingOffersCV.notify_one();
+}
+void CWaylandBackend::Wayland_DataDevice_DataOffer(
+	struct wl_data_device* pDevice, struct wl_data_offer* pOffer
+) {
+	m_CurrentOfferMimeTypes.clear();
+	wl_data_offer_add_listener(pOffer, &s_DataOfferListener, this);
+}
+
+// Data Offer
+void CWaylandBackend::Wayland_DataOffer_Offer(struct wl_data_offer* pOffer, const char* pMime) {
+	m_CurrentOfferMimeTypes.emplace_back(pMime);
+	xdg_log.debugf("Clipboard supports MIME type: %s", pMime);
 }
 
 ///////////////////////

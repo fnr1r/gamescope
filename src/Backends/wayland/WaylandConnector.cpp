@@ -12,6 +12,8 @@
 #include "vblankmanager.hpp"
 #include "xdg_log.hpp"
 
+#include <wayland-client-protocol.h>
+
 namespace gamescope {
 
 CWaylandConnector::CWaylandConnector(CWaylandBackend* pBackend, uint64_t ulVirtualConnectorKey)
@@ -310,11 +312,8 @@ void CWaylandConnector::SetSelection(
 		wl_data_source* source =
 			wl_data_device_manager_create_data_source(m_pBackend->m_pDataDeviceManager);
 		wl_data_source_add_listener(source, &m_pBackend->s_DataSourceListener, m_pBackend);
-		wl_data_source_offer(source, "text/plain");
-		wl_data_source_offer(source, "text/plain;charset=utf-8");
-		wl_data_source_offer(source, "TEXT");
-		wl_data_source_offer(source, "STRING");
-		wl_data_source_offer(source, "UTF8_STRING");
+		for (const char* mime_type : CWaylandBackend::s_SupportedMimeTypes)
+			wl_data_source_offer(source, mime_type);
 		wl_data_device_set_selection(
 			m_pBackend->m_pDataDevice, source, m_pBackend->m_uKeyboardEnterSerial
 		);
@@ -327,11 +326,8 @@ void CWaylandConnector::SetSelection(
 		zwp_primary_selection_source_v1_add_listener(
 			source, &m_pBackend->s_PrimarySelectionSourceListener, m_pBackend
 		);
-		zwp_primary_selection_source_v1_offer(source, "text/plain");
-		zwp_primary_selection_source_v1_offer(source, "text/plain;charset=utf-8");
-		zwp_primary_selection_source_v1_offer(source, "TEXT");
-		zwp_primary_selection_source_v1_offer(source, "STRING");
-		zwp_primary_selection_source_v1_offer(source, "UTF8_STRING");
+		for (const char* mime_type : CWaylandBackend::s_SupportedMimeTypes)
+			zwp_primary_selection_source_v1_offer(source, mime_type);
 		zwp_primary_selection_device_v1_set_selection(
 			m_pBackend->m_pPrimarySelectionDevice, source, m_pBackend->m_uPointerEnterSerial
 		);
